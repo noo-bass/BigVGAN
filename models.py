@@ -10,13 +10,22 @@ import torch.nn.functional as F
 import torch.nn as nn
 from torch.nn import Conv1d, ConvTranspose1d, Conv2d
 from torch.nn.utils import weight_norm, remove_weight_norm, spectral_norm
-
-import activations
-from utils import init_weights, get_padding
+import numpy as np
+from activations import Snake,SnakeBeta
 from alias_free_torch import *
+import os
+from omegaconf import OmegaConf
 
 LRELU_SLOPE = 0.1
 
+def init_weights(m, mean=0.0, std=0.01):
+    classname = m.__class__.__name__
+    if classname.find("Conv") != -1:
+        m.weight.data.normal_(mean, std)
+
+
+def get_padding(kernel_size, dilation=1):
+    return int((kernel_size*dilation - dilation)/2)
 
 class AMPBlock1(torch.nn.Module):
     def __init__(self, h, channels, kernel_size=3, dilation=(1, 3, 5), activation=None):
@@ -48,13 +57,13 @@ class AMPBlock1(torch.nn.Module):
         if activation == 'snake': # periodic nonlinearity with snake function and anti-aliasing
             self.activations = nn.ModuleList([
                 Activation1d(
-                    activation=activations.Snake(channels, alpha_logscale=h.snake_logscale))
+                    activation=Snake(channels, alpha_logscale=h.snake_logscale))
                 for _ in range(self.num_layers)
             ])
         elif activation == 'snakebeta': # periodic nonlinearity with snakebeta function and anti-aliasing
             self.activations = nn.ModuleList([
                 Activation1d(
-                    activation=activations.SnakeBeta(channels, alpha_logscale=h.snake_logscale))
+                    activation=SnakeBeta(channels, alpha_logscale=h.snake_logscale))
                  for _ in range(self.num_layers)
             ])
         else:
@@ -96,13 +105,13 @@ class AMPBlock2(torch.nn.Module):
         if activation == 'snake': # periodic nonlinearity with snake function and anti-aliasing
             self.activations = nn.ModuleList([
                 Activation1d(
-                    activation=activations.Snake(channels, alpha_logscale=h.snake_logscale))
+                    activation=Snake(channels, alpha_logscale=h.snake_logscale))
                 for _ in range(self.num_layers)
             ])
         elif activation == 'snakebeta': # periodic nonlinearity with snakebeta function and anti-aliasing
             self.activations = nn.ModuleList([
                 Activation1d(
-                    activation=activations.SnakeBeta(channels, alpha_logscale=h.snake_logscale))
+                    activation=SnakeBeta(channels, alpha_logscale=h.snake_logscale))
                  for _ in range(self.num_layers)
             ])
         else:
@@ -154,10 +163,10 @@ class BigVGAN(torch.nn.Module):
 
         # post conv
         if h.activation == "snake": # periodic nonlinearity with snake function and anti-aliasing
-            activation_post = activations.Snake(ch, alpha_logscale=h.snake_logscale)
+            activation_post = Snake(ch, alpha_logscale=h.snake_logscale)
             self.activation_post = Activation1d(activation=activation_post)
         elif h.activation == "snakebeta": # periodic nonlinearity with snakebeta function and anti-aliasing
-            activation_post = activations.SnakeBeta(ch, alpha_logscale=h.snake_logscale)
+            activation_post = SnakeBeta(ch, alpha_logscale=h.snake_logscale)
             self.activation_post = Activation1d(activation=activation_post)
         else:
             raise NotImplementedError("activation incorrectly specified. check the config file and look for 'activation'.")
@@ -379,3 +388,25 @@ def generator_loss(disc_outputs):
 
     return loss, gen_losses
 
+class VocoderBigVGAN(object):
+    def __init__(self, ckpt_vocoder,device='cuda'):
+        vocoder_sd = torch.load(os.path.join(ckpt_vocoder,'best_netG.pt'), map_location='cpu')
+
+        vocoder_args = OmegaConf.load(os.path.join(ckpt_vocoder,'args.yml'))
+
+        self.generator = BigVGAN(vocoder_args)
+        self.generator.load_state_dict(vocoder_sd['generator'])
+        self.generator.eval()
+
+        self.device = device
+        self.generator.to(self.device)
+
+    def vocode(self, spec):
+        with torch.no_grad():
+            if isinstance(spec,np.ndarray):
+                spec = torch.from_numpy(spec).unsqueeze(0)
+            spec = spec.to(dtype=torch.float32,device=self.device)
+            return self.generator(spec).squeeze().cpu().numpy()
+
+    def __call__(self, wav):
+        return self.vocode(wav)
