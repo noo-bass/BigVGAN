@@ -11,8 +11,8 @@ import torch.nn as nn
 from torch.nn import Conv1d, ConvTranspose1d, Conv2d
 from torch.nn.utils import weight_norm, remove_weight_norm, spectral_norm
 import numpy as np
-from activations import Snake,SnakeBeta
-from alias_free_torch import *
+from .activations import Snake,SnakeBeta
+from .alias_free_torch import *
 import os
 from omegaconf import OmegaConf
 
